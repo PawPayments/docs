@@ -1,0 +1,29 @@
+---
+title: Migrate from another provider
+description: Use PawPayments as a drop-in base URL for selected Cryptomus, Heleket, and NowPayments integrations.
+---
+
+The Compatibility API lets an existing merchant integration keep its provider SDK and request format while switching traffic to PawPayments.
+
+In most integrations, the merchant changes only the provider base URL:
+
+| Provider SDK | Paw base URL |
+|---|---|
+| Cryptomus | `https://api.pawpayments.com/compat/cryptomus/v1` |
+| Heleket | `https://api.pawpayments.com/compat/heleket/v1` |
+| NowPayments | `https://api.pawpayments.com/compat/nowpayments/v1` |
+
+Use the same Paw merchant `api_key` for request signing. Cryptomus and Heleket SDKs send the Paw merchant ID as the `merchant` header and sign with `api_key`. NowPayments SDKs continue to send `x-api-key`.
+
+## Webhooks
+
+Invoices created through a compatibility route automatically use that provider's webhook format:
+
+| Created through | Webhook format |
+|---|---|
+| `/compat/cryptomus/v1` | Cryptomus IPN body with `sign` in JSON |
+| `/compat/heleket/v1` | Heleket-compatible IPN body with `sign` in JSON |
+| `/compat/nowpayments/v1` | NowPayments IPN body with `x-nowpayments-sig` header |
+| Native API | Native format by default, or the invoice-level `webhook_format` override |
+
+Compatibility routes are documented here as a migration guide. For individual request field descriptions, keep using the original provider documentation. The sections below describe what Paw supports, what is ignored, and what returns `501 NOT_SUPPORTED`.

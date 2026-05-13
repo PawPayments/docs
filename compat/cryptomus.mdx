@@ -1,0 +1,57 @@
+---
+title: Cryptomus
+description: Cryptomus-compatible routes, authentication, webhooks, and unsupported features.
+---
+
+Use this base URL in an existing Cryptomus integration:
+
+```text
+https://api.pawpayments.com/compat/cryptomus/v1
+```
+
+Requests keep the Cryptomus authentication format:
+
+| Header | Value |
+|---|---|
+| `merchant` | Paw merchant ID as a string. |
+| `sign` | `md5(base64(json_body) + api_key)` |
+
+The same Paw `api_key` is used as both the Cryptomus payment key and payout key.
+
+Payout routes require the caller IP address to be present in the merchant's payout IP whitelist.
+
+## Supported
+
+Supported categories:
+
+- Payments: create, info, list, resend, services, test webhook
+- Payouts: create, info, list, services, test webhook
+- Static wallet
+- Balance
+- Exchange rates
+
+Cryptomus `order_id` responses contain the Paw invoice or payout id. Sending that id again as `order_id` for the same merchant returns the existing invoice or payout.
+
+## Not Supported
+
+These features are not available and return a provider-shaped `501 NOT_SUPPORTED` response:
+
+- `POST /v1/payment/mark-as-paid`
+- `POST /v1/payment/qr`
+- `/v1/recurrence/*`
+- `/v2/user-api/*`
+
+These request fields are accepted but ignored:
+
+- `course_source`
+- payout `priority`
+- payout `from_currency`
+- invoice `is_refresh`
+
+Code-based discounts are not supported. Use `discount_percent` when a simple invoice amount modifier is enough.
+
+## Webhooks
+
+Cryptomus-compatible invoices send a JSON IPN body with a `sign` field in the body. The signature uses the same `md5(base64(json_body_without_sign) + api_key)` pattern expected by Cryptomus integrations.
+
+PHP-style slash escaping is enabled by default for signature generation, matching common Cryptomus and Heleket PHP examples. Disable the merchant setting `cryptomus_php_slashes` only if the merchant-side verifier expects unescaped slashes.

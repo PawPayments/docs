@@ -1,0 +1,135 @@
+---
+title: WHMCS
+description: Crypto checkout and Add Funds top-up for WHMCS via the official PawPayments gateway and addon.
+---
+
+The WHMCS integration ships as **two** components that share a single API key:
+
+- a **payment gateway** (`PawPayments (Crypto)`) that pays any WHMCS invoice with crypto,
+- an optional **addon** (`PawPayments Crypto Deposit`) that adds an *Add Funds* page where customers credit their WHMCS balance with crypto.
+
+| Property | Value |
+|---|---|
+| GitHub | `pawpayments/whmcs-plugin` |
+| WHMCS | 8.x |
+| PHP | 7.4+ (8.1+ recommended; WHMCS 8.x supports up to 8.3) |
+| Required extensions | `curl`, `json`, `mbstring`, `openssl` |
+| Database | Whatever WHMCS already uses (MySQL / MariaDB) |
+
+## File layout
+
+The release zip mirrors the WHMCS install tree:
+
+```
+modules/
+├── gateways/
+│   ├── pawpayments.php                          ← gateway entry point
+│   ├── pawpayments/                             ← vendored SDK
+│   │   └── vendor/pawpayments/sdk/...
+│   └── callback/
+│       ├── pawpayments.php                      ← checkout webhook
+│       └── pawpayments_topup.php                ← top-up webhook
+└── addons/
+    └── pawpayments_topup/
+        └── pawpayments_topup.php                ← top-up addon (Add Funds)
+```
+
+Drop those folders directly into your WHMCS root, then restore ownership:
+
+```bash
+chown -R www-data:www-data \
+    modules/gateways/pawpayments.php \
+    modules/gateways/pawpayments \
+    modules/gateways/callback/pawpayments*.php \
+    modules/addons/pawpayments_topup
+```
+
+## Activate the gateway
+
+1. **Setup → Payments → Payment Gateways → All Payment Gateways**.
+2. Click **PawPayments (Crypto)** to activate.
+3. Fill the fields:
+
+   | Field | Value |
+   |---|---|
+   | Display Name | Customer‑facing label, e.g. *PawPayments (Crypto)*. |
+   | API Key | Merchant API key from the Paw dashboard. |
+   | API Base URL | `https://api.pawpayments.com` (default). |
+   | Invoice TTL (seconds) | Lifetime of the underlying Paw invoice. Default `3600`. The same `payment_url` is reused inside that window. |
+
+## Activate the Add Funds addon (optional)
+
+1. **Setup → Addon Modules → PawPayments Crypto Deposit → Activate**.
+2. **Configure** — leave the **API Key** field empty to inherit the gateway's key, or enter a separate one.
+3. Grant access to the desired admin roles, save.
+
+The addon creates `mod_pawpayments_credits` on activation; this small table provides idempotency for the top‑up webhook (primary key on `order_id`).
+
+The customer top‑up page is then available at `https://<your-whmcs>/index.php?m=pawpayments_topup`. Link to it from a custom client‑area menu item.
+
+## Webhook URLs
+
+The plugin sends `notify_url` on every invoice it creates, so manual webhook setup is not required. The endpoints are:
+
+| Purpose | URL |
+|---|---|
+| Checkout | `https://<your-whmcs>/modules/gateways/callback/pawpayments.php` |
+| Top‑up | `https://<your-whmcs>/modules/gateways/callback/pawpayments_topup.php` |
+
+If the merchant account requires a *default* webhook URL, use the checkout one. Both endpoints must be reachable over HTTPS.
+
+## Lifecycle
+
+**Checkout.** `addInvoicePayment` is called with the Paw `order_id` as `transactionId`, so duplicate webhook deliveries never double‑pay an invoice.
+
+**Top‑up.** Each top‑up creates a one‑shot Paw invoice via `POST /api/v2/invoices` and is recorded in `mod_pawpayments_credits` keyed by `order_id`. On webhook success the WHMCS `AddCredit` API is called, visible on **Clients → Client Profile → Summary → Credit Balance**.
+
+Webhooks carrying a `permanent_address_id` are silently acknowledged with `200 OK`.
+
+## Smoke test (checkout)
+
+```bash
+ORDER_ID="<paw_order_id>"
+INVOICE_ID="<whmcs_invoice_id>"
+KEY="<your_api_key>"
+BODY="{\"order_id\":\"$ORDER_ID\",\"extra\":\"$INVOICE_ID\",\"status\":\"success\",\"fiat_amount\":\"15\",\"asset\":\"USDT\"}"
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$KEY" | awk '{print $2}')
+
+curl -X POST "https://<your-whmcs>/modules/gateways/callback/pawpayments.php" \
+  -H "Content-Type: application/json" \
+  -H "X-Paw-Signature: $SIG" \
+  -d "$BODY"
+```
+
+Expected: `OK` with HTTP 200, and the WHMCS invoice transitions to **Paid**.
+
+## Troubleshooting
+
+| Symptom | Cause / Fix |
+|---|---|
+| Gateway not in the list at **Setup → Payments → Payment Gateways** | Files not uploaded or wrong path. Verify `modules/gateways/pawpayments.php` exists and is readable by the web user. |
+| `Failed to create payment: Invalid API key` | API key wrong or merchant not activated. |
+| Webhook returns HTTP 500 with `Failed to open required init.php` | Outdated callback. Current callback uses `require_once __DIR__ . '/../../../init.php';` (three `..`, not four). Re‑upload the latest `callback/pawpayments*.php`. |
+| Webhook returns HTTP 401 *Invalid signature* | The API key in gateway settings does not match the one used to issue the invoice. Update settings and re‑issue. |
+| Top‑up addon not visible | Activate it under **Setup → Addon Modules** and grant access to your admin role. |
+| `Module Not Activated` on top‑up | The gateway must be enabled — the addon falls back to the gateway's API key. |
+| Duplicate top‑ups | `mod_pawpayments_credits` prevents this. If the table is missing, re‑activate the addon. |
+
+WHMCS gateway logs are at **Utilities → Logs → Gateway Log** (filter by `pawpayments`).
+
+## Uninstall
+
+```bash
+cd /path/to/whmcs
+rm -rf modules/gateways/pawpayments.php \
+       modules/gateways/pawpayments \
+       modules/gateways/callback/pawpayments.php \
+       modules/gateways/callback/pawpayments_topup.php \
+       modules/addons/pawpayments_topup
+```
+
+Deactivate the addon and gateway from the WHMCS admin first. Optionally drop the bookkeeping table:
+
+```sql
+DROP TABLE IF EXISTS mod_pawpayments_credits;
+```

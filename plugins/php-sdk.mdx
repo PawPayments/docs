@@ -1,0 +1,86 @@
+---
+title: PHP SDK
+description: Lightweight PHP client for the PawPayments API v2 and webhook signature verification.
+---
+
+`pawpayments/sdk` is a tiny dependency‑free PHP library used by all official plugins. You can also install it directly to integrate PawPayments into a custom PHP application.
+
+| Property | Value |
+|---|---|
+| Package name | `pawpayments/sdk` |
+| GitHub | `pawpayments/php-sdk` |
+| Minimum PHP | 7.4 (8.x supported) |
+| Required extensions | `ext-curl`, `ext-json` |
+| Runtime dependencies | None |
+
+## Installation
+
+```bash
+composer require pawpayments/sdk
+```
+
+For environments without Composer (legacy WHMCS / BillManager hosts) the SDK can also be vendored manually — every plugin in this repository ships an embedded copy under its own `vendor/` directory.
+
+## Quick start
+
+```php
+use PawPayments\Sdk\PawPaymentsClient;
+use PawPayments\Sdk\Exception\PawPaymentsApiException;
+
+$client = new PawPaymentsClient(
+    apiKey:  getenv('PAW_API_KEY'),
+    baseUrl: 'https://api.pawpayments.com', // default
+);
+
+try {
+    $invoice = $client->createInvoice([
+        'fiat'         => 'USD',
+        'fiat_amount'  => '25.00',
+        'billing_type' => 'STATIC',
+        'extra'        => 'order-1042',
+        'notify_url'   => 'https://example.com/webhooks/paw',
+        'metadata'     => ['source' => 'custom-app', 'flow' => 'checkout'],
+    ]);
+
+    header('Location: ' . $invoice['payment_url']);
+} catch (PawPaymentsApiException $e) {
+    error_log('Paw API error: ' . $e->getCode() . ' ' . $e->getMessage());
+}
+```
+
+The client always returns the unwrapped `result` object from the standard `{ ok, result }` response envelope, and throws `PawPaymentsApiException` (with the upstream error `code`, `message`, and HTTP status) for both transport and API failures.
+
+## Methods
+
+| Method | Endpoint | Notes |
+|---|---|---|
+| `createInvoice(array $params): array` | `POST /api/v2/invoices` | Returns the created invoice including `payment_url`, `order_id`, `external_id`. |
+| `getInvoice(string $orderId): array` | `GET /api/v2/invoices/{order_id}` | Used for status polling and idempotent checks. |
+
+The SDK is intentionally minimal — anything not covered by these two methods is one `curl` call away. The same authentication header (`x-api-key: <api-key>`) and the same response envelope are used on every endpoint.
+
+## Webhook verification
+
+`PawPayments\Sdk\Webhook::verify()` validates the HMAC‑SHA256 signature delivered in the `X-Paw-Signature` header. Use the **raw request body** — JSON‑re‑encoding the payload before hashing will break the comparison.
+
+```php
+use PawPayments\Sdk\Webhook;
+
+$raw     = file_get_contents('php://input');
+$sigHdr  = $_SERVER['HTTP_X_PAW_SIGNATURE'] ?? '';
+$payload = json_decode($raw, true) ?: [];
+
+if (!Webhook::verify($raw, $sigHdr, $payload, $apiKey)) {
+    http_response_code(401);
+    echo 'Invalid signature';
+    return;
+}
+
+if (!empty($payload['permanent_address_id'])) {
+    http_response_code(200);
+    echo 'OK';
+    return;
+}
+
+// Process $payload['order_id'], $payload['status'], $payload['fiat_amount']…
+```

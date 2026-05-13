@@ -1,0 +1,171 @@
+---
+title: BillManager
+description: PawPayments crypto checkout and top-up for BillManager 6.x.
+---
+
+The BillManager integration adds:
+
+- a payment method (`PawPayments`) plugged into the standard BillManager payment flow,
+- a small CGI page for client‑initiated **top‑ups** that credit the client account on payment.
+
+| Property | Value |
+|---|---|
+| GitHub | `pawpayments/billmgr-plugin` |
+| BillManager | 6.x (tested on 5.437+) |
+| PHP | 7.4 (BillManager bundles 7.4 by default; 8.x also works) |
+| Required access | `root` on the BillManager host (installer writes into `/usr/local/mgr5/`) |
+| HTTPS | Required — Paw delivers webhooks over TLS only |
+
+## File layout
+
+After installation the files live under `/usr/local/mgr5/`:
+
+```
+etc/xml/billmgr_mod_pmpawpayments.xml          ← plugin manifest + form
+paymethods/pmpawpayments                       ← config CLI handler (executable)
+cgi/pawpaymentspayment.php                     ← checkout: create invoice + redirect
+cgi/pawpaymentsresult.php                      ← checkout webhook receiver
+cgi/pawpaymentstopup.php                       ← top-up CGI form
+cgi/pawpaymentstopup_result.php                ← top-up webhook receiver
+include/php/pawpayments_util.php               ← helpers (LocalQuery, logging)
+include/php/vendor/pawpayments/sdk/...         ← vendored PHP SDK
+skins/...                                      ← icon assets (optional)
+```
+
+## Install
+
+The release ships an `install.sh` that copies everything into place and reloads the BillManager `core` worker.
+
+```bash
+cp -r billmgr-plugin/ /root/
+touch /root/billmgr-plugin/.pawpayments         # marker file required by the installer
+cd    /root/billmgr-plugin
+chmod +x install.sh
+./install.sh
+```
+
+To install manually:
+
+```bash
+cp -r etc paymethods cgi include skins /usr/local/mgr5/
+chmod 755 /usr/local/mgr5/paymethods/pmpawpayments
+chmod 755 /usr/local/mgr5/cgi/pawpayments*.php
+killall core                                          # gracefully reloads the BillManager core
+```
+
+The new payment method appears as **PawPayments** under **Settings → Payment methods**.
+
+## Configure the payment method
+
+Use the BillManager UI: **Settings → Payment methods → Add → Module: PawPayments** and fill the wizard.
+
+| Field | Description |
+|---|---|
+| Name | Visible name (e.g. *PawPayments Crypto*). |
+| Currency | The fiat currency you bill in. PawPayments accepts USD, EUR, GBP, CAD, AUD, CHF, JPY, NZD, SGD, HKD, NGN, KRW, ILS, RON, ARS, INR, IDR, MXN, MYR, TRY, PLN, BRL, THB. Unsupported BillManager currencies are rejected with `VALIDATION_ERROR` when the invoice is created. |
+| Project | The BillManager project this method is available in. |
+| API Key | Merchant API key from the Paw dashboard. |
+| API Base URL | `https://api.pawpayments.com` (or leave empty to use the default). |
+| Invoice TTL (seconds) | Default `3600`. |
+
+For headless deployments you can also seed the row directly:
+
+```sql
+SET @next_id := (SELECT COALESCE(MAX(id), 0) + 1 FROM paymethod);
+SET @xmlp := '<doc><SECRET_KEY>YOUR_API_KEY</SECRET_KEY><API_BASE_URL>https://api.pawpayments.com</API_BASE_URL><DEFAULT_TTL>3600</DEFAULT_TTL></doc>';
+INSERT INTO paymethod (id, orderpriority, name, active, currency, module, xmlparams, recurring, allowrefund, profiletype)
+VALUES (@next_id, 10, 'PawPayments Crypto', 'on',
+        (SELECT id FROM currency WHERE iso = 'USD' LIMIT 1),
+        'pmpawpayments', @xmlp, 'off', 'off', '');
+```
+
+You will still need to attach the new `paymethod` to your project (`paymethod2project`) and to a group (`paymethod2group`) for it to appear in the customer area.
+
+## Webhook URLs
+
+| Purpose | URL |
+|---|---|
+| Checkout | `https://<your-server>/mancgi/pawpaymentsresult.php` |
+| Top‑up | `https://<your-server>/mancgi/pawpaymentstopup_result.php` |
+
+Both endpoints must be reachable over HTTPS. If you front BillManager with Nginx, make sure `/mancgi/` is proxied to the BillManager `ihttpd` (port `1500`):
+
+```nginx
+location / {
+    proxy_pass https://<server-ip>:1500;
+    proxy_ssl_verify off;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+## Lifecycle
+
+**Checkout.** The CGI builds a Paw invoice via `POST /api/v2/invoices`, redirects to `payment_url`, and on webhook success calls `payment.setpaid` exactly once — payment status is checked first, so retries never re‑mark a payment as paid.
+
+**Top‑up.** The customer enters an amount on `pawpaymentstopup.php`; the CGI creates a Paw invoice and stores its `order_id`. The webhook handler verifies the signature, checks `externalid` for duplicates, and creates a BillManager `payment` row already marked as paid — BillManager itself converts that row into account credit on the next billing cycle event.
+
+Webhooks carrying a `permanent_address_id` are silently acknowledged with `200 OK`.
+
+## Smoke test
+
+```bash
+curl -X POST "https://<your-server>/mancgi/pawpaymentsresult.php" \
+     -H "Content-Type: application/json" \
+     -d '{}' \
+     -w "\nHTTP %{http_code}\n"
+```
+
+Expected: `Missing data` with HTTP 200 — confirms the script loads and parses JSON.
+
+End‑to‑end check with a valid signature:
+
+```bash
+KEY="<your_api_key>"
+ORDER_ID="<paw_order_id>"
+ELID="<billmgr_payment_id>"
+BODY="{\"order_id\":\"$ORDER_ID\",\"extra\":\"$ELID\",\"status\":\"success\",\"fiat_amount\":\"25\",\"asset\":\"USDT\"}"
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$KEY" | awk '{print $2}')
+
+curl -X POST "https://<your-server>/mancgi/pawpaymentsresult.php" \
+     -H "Content-Type: application/json" \
+     -H "X-Paw-Signature: $SIG" \
+     -d "$BODY"
+```
+
+Expected: `OK` with HTTP 200.
+
+## Troubleshooting
+
+| Symptom | Cause / Fix |
+|---|---|
+| **PawPayments** does not appear in **Add payment method** | XML manifest not loaded. Run `killall core` (BillManager auto‑restarts the worker) or `service ihttpd restart`. Check that `/usr/local/mgr5/etc/xml/billmgr_mod_pmpawpayments.xml` exists. |
+| `mgrctl paymethod.add ... ERROR missed(currency)` | The `mgrctl` wizard is stateful — pass parameters in the right step or use the UI / direct DB seed. |
+| Webhook returns `Payment not found` | The BillManager payment row referenced by `extra` does not exist, or it has no project / profile. Configure projects, profiles, and accounts before testing. |
+| Webhook returns `Invalid signature` | The API key on the payment method does not match the one used to issue the invoice. Update **Settings → Payment methods → PawPayments → API Key** and re‑issue. |
+| Top‑up not crediting funds | The CGI creates a payment row marked as paid; BillManager itself converts it to credit on the next billing cycle event. Check `tail -f /usr/local/mgr5/var/billmgr.log`. |
+| Nginx returns `502 Bad Gateway` for `/mancgi/...` | `ihttpd` is not listening on the address Nginx is proxying to. Confirm `ss -tlnp \| grep 1500` and update `proxy_pass`. |
+
+Plugin debug messages are written to BillManager's main log:
+
+```bash
+tail -f /usr/local/mgr5/var/billmgr.log | grep -i pawpayments
+```
+
+## Uninstall
+
+```bash
+rm -f  /usr/local/mgr5/etc/xml/billmgr_mod_pmpawpayments.xml
+rm -f  /usr/local/mgr5/paymethods/pmpawpayments
+rm -f  /usr/local/mgr5/cgi/pawpayments*.php
+rm -rf /usr/local/mgr5/include/php/vendor/pawpayments
+rm -f  /usr/local/mgr5/include/php/pawpayments_util.php
+rm -rf /usr/local/mgr5/skins/orion/images/pawpayments
+
+mysql billmgr -e "DELETE FROM paymethod WHERE module='pmpawpayments';"
+killall core
+```
+
+Existing payment history is preserved — BillManager keeps `payment` rows even after the method is removed.

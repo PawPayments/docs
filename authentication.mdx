@@ -1,0 +1,32 @@
+---
+title: Authentication
+description: How to authenticate requests to the PawPayments API.
+---
+
+Every `/api/v2/*` endpoint requires an API key.
+
+Pass it in the `x-api-key` header:
+
+```bash
+curl https://api.pawpayments.com/api/v2/balance \
+  -H "x-api-key: $PAW_API_KEY"
+```
+
+API keys are issued in the merchant dashboard. Each key is bound to a single
+merchant.
+
+## Payouts and IP allowlists
+
+Payout endpoints (`POST /api/v2/payouts`, `POST /api/v2/payouts/batch`) require
+the request IP to be in the merchant's `allowed_subnets`. Calls from any
+other IP receive `403 PAYOUTS_DISABLED`.
+
+Payout requests must also carry a fresh UUIDv4 in the `x-uniq-id` header.
+The same value is rejected for 2 hours, providing idempotency for retries
+and accidental double-submissions.
+
+## Merchant status
+
+Requests are rejected with `403` when the merchant is in `paused`,
+`pending_verification` or `rejected` status, or when KYC is `pending` /
+`rejected`.
