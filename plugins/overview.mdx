@@ -1,0 +1,40 @@
+---
+title: Plugins & SDKs
+description: Official PawPayments plugins plus PHP, Python, and Node.js SDKs for the Native V2 API.
+---
+
+PawPayments ships first-party SDKs for PHP, Python, and Node.js that talk to the documented `/api/v2/*` surface, plus plugins for popular billing and e‑commerce platforms. The PHP SDK underpins WooCommerce, WHMCS, Blesta, and BillManager; Python and Node clients mirror the full Native V2 API (invoices, payouts, ledger, permanent addresses, and more). Plugins use only public endpoints — no hidden backend logic — so anything they do is reproducible from your own integration.
+
+| Plugin | Platform | Flows | GitHub |
+|---|---|---|---|
+| [PHP SDK](./php-sdk) | Composer package | Create / fetch invoices, verify webhooks | `pawpayments/php-sdk` |
+| [Python SDK](./python-sdk) | PyPI (`pawpayments`) | Full Native V2 API + webhooks | `pawpayments/python-sdk` |
+| [Node.js SDK](./node-sdk) | npm (`@pawpayments/sdk`) | Full Native V2 API + webhooks | `pawpayments/node-sdk` |
+| [WooCommerce](./woocommerce) | WordPress + WooCommerce 7+ | Checkout | `pawpayments/woocommerce-plugin` |
+| [WHMCS](./whmcs) | WHMCS 8.x | Checkout, Add Funds (top‑up) | `pawpayments/whmcs-plugin` |
+| [Blesta](./blesta) | Blesta 4.x / 5.x | Checkout | `pawpayments/blesta-plugin` |
+| [BillManager](./billmanager) | BillManager 6.x | Checkout, top‑up | `pawpayments/billmgr-plugin` |
+
+## Common conventions
+
+All plugins are intentionally thin wrappers around the public API and follow the same conventions, so they can coexist on a single merchant account without colliding:
+
+- `extra` carries the platform invoice / order ID for checkout flows, and the client / account ID for top‑up flows.
+- `metadata.source` is set to `whmcs`, `woocommerce`, `blesta`, or `billmanager`.
+- `metadata.flow` is `checkout` or `topup`.
+- Checkout and top‑up always use **separate `notify_url` endpoints**, so a single PawPayments callback URL setting on the merchant side is not required.
+- Currency and network selection happens entirely on the PawPayments paywall — the plugins never need to know which assets are enabled for the merchant.
+
+## Webhook handling
+
+Every plugin verifies the `X-Paw-Signature` header (HMAC‑SHA256 of the raw body, keyed with the merchant's API key).
+
+Webhooks that carry a `permanent_address_id` field — i.e. deposits to long‑lived addresses, not to a one‑shot invoice — are silently acknowledged with `200 OK` and never produce duplicate orders or credits. Permanent‑address flows belong to your own backend integration, not to a checkout plugin.
+
+## Idempotency
+
+Each plugin protects against double‑credit on webhook retries:
+
+- **WooCommerce** — `payment_complete()` is natively idempotent; the order can only transition out of `on-hold` once.
+- **WHMCS** — checkout uses `addInvoicePayment`'s `transactionId` deduplication; top‑up uses a small `mod_pawpayments_credits` table keyed by `order_id`.
+- **BillManager** — checkout reads payment status before calling `payment.setpaid`; top‑up checks `externalid` before issuing a new payment.

@@ -1,0 +1,16 @@
+---
+title: Heleket
+description: Heleket-compatible migration notes.
+---
+
+Use this base URL in an existing Heleket integration:
+
+```text
+https://api.pawpayments.com/compat/heleket/v1
+```
+
+Heleket is wire-compatible with Cryptomus for the merchant API: the same paths, headers, request signing, response envelopes, and webhook signing are used.
+
+For the supported categories and unsupported features, see [Cryptomus](./cryptomus). The only practical differences are the base URL and the invoice-level webhook format name stored by PawPayments.
+
+For the full list of supported providers, see the [migration overview](./overview).

@@ -1,0 +1,105 @@
+---
+title: Webhooks
+description: Outgoing webhook format, delivery semantics, and signature verification.
+---
+
+When an invoice changes status, PawPayments POSTs an invoice snapshot (JSON)
+to the merchant's `notify_url` (per-invoice override) or to the merchant-level
+`callback_url`. Delivery is **automatic** and **idempotent** — every merchant
+receives at most one webhook per terminal transition of each invoice.
+
+## Delivery guarantees
+
+- **Automatic.** Fires on every status change of an invoice created via
+  `POST /api/v2/invoices` (and on auto-created invoices bound to permanent
+  addresses).
+- **Persistent retries.** Delivery attempts run as a durable background job,
+  so they survive process restarts.
+  On 2xx → done. On 4xx (except `408`/`425`/`429`) → give up immediately
+  (merchant is presumed misconfigured). Otherwise the job is retried with
+  exponential backoff: **30s, 1m, 2m, 5m, 10m, 20m, 40m, 80m, 160m** —
+  up to **10 attempts** total (≈5h wall-clock).
+- **URL safety.** Each attempt DNS-resolves the callback and refuses to
+  deliver if the host is private, loopback, link-local, or unresolvable.
+  These refusals are logged as attempts too (with a human-readable reason).
+- **Source IPs.** All webhooks originate from the subnet
+  `94.249.204.0/24`. Allowlist this range if your endpoint is
+  firewalled or restricted to known senders.
+- **Audit log.** Every delivery attempt is recorded: URL, status code,
+  response body (first 500 chars), attempt number, and timestamp. Inspect
+  via `GET /api/v2/notifications` or replay a specific invoice on demand
+  via `POST /api/v2/invoices/{id}/notify`.
+
+## Headers
+
+| Header | Purpose |
+|---|---|
+| `Content-Type: application/json` | Body is a single JSON object. |
+| `User-Agent: Mozilla/5.0 (compatible; PawWebhook/2.0; ...)` | Identifies the sender. |
+| `X-Paw-Signature` | HMAC-SHA256 of the **exact raw body** keyed with the merchant's API key (hex-encoded). |
+
+
+## Payload
+
+The payload is the same invoice shape returned by `GET /api/v2/invoices/{id}`
+(see the API Reference for the canonical schema). Authenticity is established
+exclusively by the `X-Paw-Signature` header — there is no `signature` field
+inside the JSON body.
+
+Key fields for merchant processing:
+
+| Field | Meaning |
+|---|---|
+| `order_id` | Unique 24-char hex id of the invoice. |
+| `external_id` | Public checkout id (UUID) used in the hosted-checkout URL. |
+| `status` | One of `confirming`, `partially_paid`, `paid_over`, `success`, `failed`, `high_risk`, `cancelled`. `cancelled` fires only when a `partially_paid` + `billing_type=STATIC` invoice crosses `expires_at` without a top-up — the partial credit on the merchant balance is **kept** and the webhook lets you reconcile the final under-paid state. Webhooks are NOT delivered for `expired` (TTL passed with no successful credit — `created`/`waiting` rows, including sub-$2 tiny-payment deferrals that AML never enqueued) or `refunded` (admin-driven refund) — those state changes are visible via `GET /api/v2/invoices/{id}` but never push. |
+| `billing_type` | `STATIC` or `VARY` — see [Billing types](./billing-type). |
+| `asset` / `type` | Crypto asset (`usdt_tron`, `eth_eth`, …) and `native`/`token`. |
+| `amount` / `initial_amount` | Requested crypto amount (immutable). |
+| `fiat_amount` / `initial_fiat_amount` | Cumulative paid fiat / originally requested fiat (`STATIC` partial-pay makes these differ). |
+| `address_to` / `address_from` | Deposit address and (when known) sender. |
+| `received_amount` / `txid` | Last on-chain payment details. |
+| `expires_at` | Unix timestamp when the invoice stops accepting deposits. |
+| `processed_at` | Unix timestamp of the terminal transition. |
+| `metadata` | Arbitrary key/value dict passed on invoice creation. |
+
+A finalised webhook (`success`, `paid_over`, `failed`, `high_risk`,
+`cancelled`) carries the authoritative payment state — treat it as the
+source of truth and disregard any earlier `confirming` / `partially_paid`
+deliveries for the same invoice.
+
+## Verification (Node.js)
+
+```ts
+import crypto from "node:crypto";
+
+function verify(rawBody: Buffer, signatureHeader: string, apiKey: string) {
+  const expected = crypto
+    .createHmac("sha256", apiKey)
+    .update(rawBody)
+    .digest("hex");
+  return crypto.timingSafeEqual(
+    Buffer.from(expected),
+    Buffer.from(signatureHeader),
+  );
+}
+```
+
+**Important:** verify against the **raw request body** before JSON-parsing.
+Any whitespace / key-reordering will produce a different signature.
+
+## Verification (PHP)
+
+```php
+function verify(string $rawBody, string $signatureHeader, string $apiKey): bool {
+    $expected = hash_hmac('sha256', $rawBody, $apiKey);
+    return hash_equals($expected, $signatureHeader);
+}
+```
+
+## Replay and introspection
+
+- `POST /api/v2/invoices/{id}/notify` — re-fires the webhook for the invoice
+  on demand (useful for recovery or local-dev testing).
+- `GET /api/v2/notifications` — paginated audit log of every delivery
+  attempt (successful, retrying, or given up).

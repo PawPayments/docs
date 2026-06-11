@@ -1,0 +1,88 @@
+---
+title: Migrate from another provider
+description: Use PawPayments as a drop-in base URL for selected Cryptomus, Heleket, NowPayments, and CoinPayments integrations.
+---
+
+The Compatibility API lets an existing merchant integration keep its provider SDK and request format while switching traffic to PawPayments.
+
+In most integrations, the merchant changes only the provider base URL:
+
+| Provider SDK | Paw base URL |
+|---|---|
+| Cryptomus | `https://api.pawpayments.com/compat/cryptomus/v1` |
+| Heleket | `https://api.pawpayments.com/compat/heleket/v1` |
+| NowPayments | `https://api.pawpayments.com/compat/nowpayments/v1` |
+| CoinPayments (legacy v1) | `https://api.pawpayments.com/compat/coinpayments/v1/api.php` |
+| CoinPayments (v2 REST) | `https://api.pawpayments.com/compat/coinpayments` |
+
+Use the same Paw merchant `api_key` for request signing. Cryptomus and Heleket SDKs send the Paw merchant ID as the `merchant` header and sign with `api_key`. NowPayments SDKs continue to send `x-api-key`. CoinPayments SDKs send the `api_key` as the `key`/client id and sign with it (HMAC-SHA512 for legacy, HMAC-SHA256 for v2).
+
+## Where to change the base URL
+
+You only repoint the SDK (or your HTTP client) at the Paw compat base URL — paths, headers, request signing, and response parsing stay exactly the same. Below is the exact place to change it for each provider's official SDK. If you call the REST API directly without an SDK, just swap the scheme + host (keeping the version prefix) for the Paw base URL.
+
+### Cryptomus / Heleket
+
+Default host: `https://api.cryptomus.com/` (Heleket: `https://api.heleket.com/`). The SDK appends `v1/payment`, `v1/payout`, etc.
+
+- **Official PHP SDK (`cryptomus/api-php-sdk`)**: edit the constant in `src/RequestBuilder.php`:
+  ```php
+  // const API_URL = "https://api.cryptomus.com/";
+  const API_URL = "https://api.pawpayments.com/compat/cryptomus/"; // Heleket: .../compat/heleket/
+  ```
+- **Other SDKs / raw REST**: set the API host so requests resolve to `https://api.pawpayments.com/compat/cryptomus/v1/...` (or `.../compat/heleket/v1/...`).
+
+Keep the `merchant` header (Paw merchant id) and `sign` (`md5(base64(json_body) + api_key)`) unchanged.
+
+### NowPayments
+
+Default base: `https://api.nowpayments.io/v1/`.
+
+- **Official PHP SDK (`nowpayments-api-php`)**: change the class constant:
+  ```php
+  // const API_BASE = 'https://api.nowpayments.io/v1/';
+  const API_BASE = 'https://api.pawpayments.com/compat/nowpayments/v1/';
+  ```
+- **JavaScript / Go / other**: set the base-URL / host option to `https://api.pawpayments.com/compat/nowpayments/v1`.
+
+Keep sending `x-api-key`. The payout JWT flow (`POST /v1/auth`) works unchanged against the same base URL.
+
+### CoinPayments — legacy v1 (`api.php`)
+
+Legacy SDKs post to a single full URL, `https://www.coinpayments.net/api.php`.
+
+- Set the SDK's API URL field/constant (e.g. `$this->url` / `API_URL` in the CoinPayments PHP class) to:
+  ```
+  https://api.pawpayments.com/compat/coinpayments/v1/api.php
+  ```
+
+Keep the public `key` POST field and the `HMAC` header (HMAC-SHA512 of the raw body) unchanged.
+
+### CoinPayments — v2 (REST)
+
+Default base: `https://a-api.coinpayments.net` (the SDK appends `/api/v2/merchant/...`).
+
+- Pass the base URL to the client constructor — **without** a trailing path:
+  ```python
+  # Python (CoinPaymentsNet/sdk)
+  client = CoinPaymentsClient(client_id, client_secret,
+                              base_url="https://api.pawpayments.com/compat/coinpayments")
+  ```
+  PHP/JS equivalents set the same value (e.g. `ApiHelper::API_URL`).
+
+Use exactly `https://api.pawpayments.com/compat/coinpayments` (no extra path): the v2 signature covers the full request URL, so the base must match what Paw reconstructs.
+
+## Webhooks
+
+Invoices created through a compatibility route automatically use that provider's webhook format:
+
+| Created through | Webhook format |
+|---|---|
+| `/compat/cryptomus/v1` | Cryptomus IPN body with `sign` in JSON |
+| `/compat/heleket/v1` | Heleket-compatible IPN body with `sign` in JSON |
+| `/compat/nowpayments/v1` | NowPayments IPN body with `x-nowpayments-sig` header |
+| `/compat/coinpayments/v1` | CoinPayments IPN, form-encoded body + `HMAC` header (HMAC-SHA512) |
+| `/compat/coinpayments/api/v2` | CoinPayments v2 JSON body + `X-CoinPayments-Signature` header (HMAC-SHA256) |
+| Native API | Native format by default, or the invoice-level `webhook_format` override |
+
+Compatibility routes are documented here as a migration guide. For individual request field descriptions, keep using the original provider documentation. The sections below describe what Paw supports, what is ignored, and what returns `501 NOT_SUPPORTED`.

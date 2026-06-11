@@ -1,0 +1,140 @@
+---
+title: Blesta
+description: Crypto checkout for Blesta via the official PawPayments non-merchant gateway.
+---
+
+The Blesta integration ships as a single **non-merchant payment gateway**
+(`PawPayments (Crypto)`) that pays any Blesta invoice with cryptocurrency.
+Customers are redirected to the hosted PawPayments paywall to pick an asset and
+network; the invoice is reconciled automatically once the on-chain payment
+confirms and PawPayments delivers a signed webhook to Blesta's gateway callback
+URL.
+
+| Property | Value |
+|---|---|
+| GitHub | `pawpayments/blesta-plugin` |
+| Blesta | 4.x / 5.x |
+| PHP | 7.4+ (8.1+ recommended) |
+| Required extensions | `curl`, `json`, `openssl` |
+| Database | Whatever Blesta already uses (MySQL / MariaDB) |
+
+## File layout
+
+The release zip mirrors the Blesta install tree — one non-merchant gateway:
+
+```
+components/
+└── gateways/
+    └── nonmerchant/
+        └── pawpayments/
+            ├── pawpayments.php         ← gateway class
+            ├── config.json             ← metadata + supported fiats
+            ├── init.php                ← loads the vendored SDK
+            ├── language/en_us/…        ← language strings
+            ├── views/default/          ← settings + redirect templates
+            └── vendor/pawpayments/sdk/ ← vendored PHP SDK
+```
+
+Drop the `pawpayments` folder into your Blesta root at
+`components/gateways/nonmerchant/`, then restore ownership:
+
+```bash
+chown -R www-data:www-data components/gateways/nonmerchant/pawpayments
+```
+
+## Activate the gateway
+
+1. **Settings → Payment Gateways → Available**.
+2. Click **Install** next to **PawPayments (Crypto)**.
+3. Fill the fields:
+
+   | Field | Value |
+   |---|---|
+   | API Key | Merchant API key from the Paw dashboard (stored encrypted). |
+   | API Base URL | `https://api.pawpayments.com` (default). |
+   | Invoice TTL (seconds) | Lifetime of the underlying Paw invoice. Default `3600` (300–86400). |
+
+4. Under **Settings → Company → Currencies**, enable the currencies you invoice
+   in — the gateway supports the fiats listed in `config.json`.
+
+## Webhook URL
+
+PawPayments sends `notify_url` on every invoice it creates, so manual webhook
+setup is not required. Blesta routes the callback to the gateway's `validate()`
+method at:
+
+```
+https://<your-blesta>/callback/gw/{company_id}/pawpayments/
+```
+
+The settings page prints the exact URL for your company. It must be reachable
+over **HTTPS** from the public internet — PawPayments requires `notify_url` to
+use the `https` scheme and refuses to deliver to private, loopback, or
+link-local hosts.
+
+## Lifecycle
+
+| Step | Method | What happens |
+|---|---|---|
+| Client clicks **Pay** | `buildProcess()` | Creates a Paw invoice (`POST /api/v2/invoices`, `billing_type=VARY`) and redirects to `payment_url`. The Blesta invoice IDs + client ID ride along in `metadata`; the client ID is also set as `extra`. |
+| Payment confirms | `validate()` | Paw POSTs a signed webhook to the callback URL. The raw body is verified against `X-Paw-Signature`, the status is mapped, and the transaction is applied to the originating invoices, keyed by the Paw `order_id` (`transaction_id`). |
+| Client returns | `success()` | The browser lands on Blesta's return URL with the order ID + invoice data appended, reconciling to the same `transaction_id` as the webhook. |
+
+Because the Paw `order_id` is used as the Blesta `transaction_id`, duplicate
+webhook deliveries and the browser return never double-pay an invoice. Webhooks
+carrying a `permanent_address_id` (not bound to a Blesta invoice) are silently
+acknowledged.
+
+### Status mapping
+
+| PawPayments status | Blesta status |
+|---|---|
+| `success`, `paid_over` | `approved` |
+| `confirming`, `partially_paid` | `pending` |
+| `failed`, `cancelled`, `high_risk` | `declined` |
+| anything else | ignored (no transaction recorded) |
+
+## Smoke test (checkout)
+
+The webhook body carries the Blesta invoice list in `metadata.invoices`
+(`id=amount` pairs joined by `|`) and the client ID in `metadata.client_id`:
+
+```bash
+COMPANY_ID="1"
+ORDER_ID="<paw_order_id>"
+KEY="<your_api_key>"
+BODY="{\"order_id\":\"$ORDER_ID\",\"status\":\"success\",\"fiat_amount\":2.00,\"fiat_currency\":\"USD\",\"extra\":\"42\",\"metadata\":{\"source\":\"blesta\",\"flow\":\"checkout\",\"client_id\":\"42\",\"invoices\":\"101=2.00\"}}"
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$KEY" | awk '{print $2}')
+
+curl -X POST "https://<your-blesta>/callback/gw/$COMPANY_ID/pawpayments/" \
+  -H "Content-Type: application/json" \
+  -H "X-Paw-Signature: $SIG" \
+  -d "$BODY"
+```
+
+Expected: HTTP 200, and invoice `101` transitions toward **Paid** once the
+transaction is applied. A wrong or missing signature returns HTTP 401. You can
+also replay the real webhook for an existing invoice with
+`POST /api/v2/invoices/{order_id}/notify`.
+
+## Troubleshooting
+
+| Symptom | Cause / Fix |
+|---|---|
+| Gateway not under **Settings → Payment Gateways → Available** | Files not uploaded or wrong path. Verify `components/gateways/nonmerchant/pawpayments/pawpayments.php` exists and is readable by the web user. |
+| `The payment could not be created` on checkout | API key wrong / merchant not activated, or the currency is not enabled for the company. Check **Gateway → Logs**. |
+| Webhook returns HTTP 401 | The API key in gateway settings does not match the one used to issue the invoice, or the body was altered in transit. |
+| Invoice created but never marked paid | `notify_url` not reachable over HTTPS, or the callback host is private / loopback. PawPayments refuses such hosts — expose Blesta on a public HTTPS domain. |
+
+Gateway activity is logged under **Settings → Company → Gateway Logs** (or the
+per-gateway **Logs** tab).
+
+## Uninstall
+
+Uninstall the gateway from **Settings → Payment Gateways → Installed**, then
+remove the files:
+
+```bash
+cd /path/to/blesta
+rm -rf components/gateways/nonmerchant/pawpayments
+```

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "PawPayments API",
+  "colors": {
+    "primary": "#6366F1",
+    "light": "#818CF8",
+    "dark": "#6366F1"
+  },
+  "favicon": "/favicon.png",
+  "logo": {
+    "light": "/logo/light.png",
+    "dark": "/logo/dark.png",
+    "href": "https://pawpayments.com"
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "Dashboard",
+        "href": "https://pawpayments.com"
+      }
+    ],
+    "primary": {
+      "type": "button",
+      "label": "Get an API key",
+      "href": "https://pawpayments.com"
+    }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Introduction",
+            "pages": ["overview", "authentication", "billing-type", "webhooks", "errors"]
+          },
+          {
+            "group": "Migrate from another provider",
+            "pages": ["compat/overview", "compat/cryptomus", "compat/heleket", "compat/nowpayments", "compat/coinpayments"]
+          },
+          {
+            "group": "Plugins & SDKs",
+            "pages": [
+              "plugins/overview",
+              "plugins/php-sdk",
+              "plugins/python-sdk",
+              "plugins/node-sdk",
+              "plugins/woocommerce",
+              "plugins/whmcs",
+              "plugins/blesta",
+              "plugins/billmanager"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "openapi": "/api-reference/openapi.json"
+      }
+    ]
+  }
+}
