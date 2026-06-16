@@ -1,0 +1,64 @@
+---
+title: NowPayments
+description: NowPayments-compatible routes, authentication, webhooks, and unsupported features.
+---
+
+Use this base URL in an existing NowPayments integration:
+
+```text
+https://api.pawpayments.com/compat/nowpayments/v1
+```
+
+Most requests keep the NowPayments `x-api-key` header and use the Paw merchant `api_key`.
+
+## Payout Authentication
+
+NowPayments payouts normally require JWT authentication. Paw emulates that flow:
+
+- Call `POST /v1/auth`.
+- Send the Paw `api_key` as both `email` and `password`.
+- Use the returned JWT as `Authorization: Bearer <token>` for payout routes.
+
+The same payout routes also accept `x-api-key`. 2FA verification is accepted as a no-op because Paw does not require a separate 2FA step for compatibility payouts.
+
+Payout routes require the caller IP address to be present in the merchant's payout IP whitelist.
+
+## Supported
+
+Supported categories:
+
+- Status
+- Currencies
+- Minimum amount
+- Estimate
+- Payments: create, get, list
+- Hosted invoices: create, get, invoice-payment
+- Mass payouts: create, get, list
+- Payout validate-address, fee, min-amount
+- Balance
+
+## Not Supported
+
+These features are not available and return a NowPayments-shaped `501 NOT_SUPPORTED` response:
+
+- `/v1/conversion/*`
+- `/v1/subscriptions/*`
+- `/v1/subscription-plans/*`
+- `/v1/sub-partner/*`
+- `/v1/fiat-payout/*`
+- `/v1/recurring-payments/*`
+
+These request fields are accepted but ignored:
+
+- payment `fixed_rate`
+- payment `payout_address`
+- payment `payout_currency`
+- payment `payout_extra_id`
+
+## Webhooks
+
+NowPayments-compatible invoices send an IPN body similar to the NowPayments payment-status response and include the `x-nowpayments-sig` header.
+
+The signature is `HMAC-SHA512` over the alphabetically sorted JSON body. Configure your merchant-side verifier to use the same Paw `api_key` as the IPN secret.
+
+For the full list of supported providers, see the [migration overview](./overview).

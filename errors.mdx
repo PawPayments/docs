@@ -1,0 +1,35 @@
+---
+title: Errors
+description: Error envelope and common error codes.
+---
+
+Failures return HTTP 4xx/5xx with a JSON body:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Validation failed",
+    "details": [
+      { "field": "amount", "message": "Input should be greater than 0" }
+    ]
+  }
+}
+```
+
+Always branch on `error.code` rather than the human `message` — codes are
+stable, messages may change.
+
+## Common codes
+
+| HTTP | `code` | Meaning |
+|---|---|---|
+| 400 | `INVALID_ID` | The path id is not a valid ObjectId / UUID. |
+| 400 | `INVOICE_REJECTED` | Business rule violation while creating an invoice. |
+| 400 | `MISSING_HEADER` / `INVALID_HEADER` | Required header missing or malformed (e.g. `x-uniq-id`). |
+| 401 | `UNAUTHORIZED` | Missing or invalid `x-api-key`. |
+| 403 | `PAYOUTS_DISABLED` | IP not whitelisted for payouts. |
+| 404 | `NOT_FOUND` | The requested resource is invisible to this merchant. |
+| 409 | `DUPLICATE` | Same `x-uniq-id` already used. |
+| 422 | `VALIDATION_ERROR` | Body did not match the schema. `details` lists the failing fields. |

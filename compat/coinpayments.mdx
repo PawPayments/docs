@@ -1,0 +1,75 @@
+---
+title: CoinPayments
+description: CoinPayments-compatible routes (legacy v1 api.php and v2 REST), authentication, IPN/webhooks, and unsupported features.
+---
+
+Paw emulates both CoinPayments APIs. Point an existing CoinPayments integration at Paw by changing only the base URL.
+
+## Base URLs
+
+| API | Use as | Paw URL |
+|---|---|---|
+| Legacy v1 | Full URL to `api.php` | `https://api.pawpayments.com/compat/coinpayments/v1/api.php` |
+| v2 REST | SDK `base_url` | `https://api.pawpayments.com/compat/coinpayments` |
+
+The v2 SDK appends fixed paths (`/api/v2/merchant/invoices`, ...) to the base URL, so use exactly the base URL above — the request signature covers the full URL.
+
+## Authentication
+
+The same Paw merchant `api_key` is used as every CoinPayments key (public key, private key, IPN secret, v2 client id and client secret). No separate credentials are configured.
+
+**Legacy v1** keeps the classic signing:
+
+| Field | Value |
+|---|---|
+| `key` (POST field) | Paw merchant `api_key` |
+| `HMAC` (header) | `HMAC-SHA512(raw_post_body, api_key)`, hex |
+
+**v2 REST** keeps the signed-header scheme:
+
+| Header | Value |
+|---|---|
+| `X-CoinPayments-Client` | Paw merchant `api_key` |
+| `X-CoinPayments-Timestamp` | UTC `YYYY-MM-DDTHH:MM:SS` |
+| `X-CoinPayments-Signature` | `base64(HMAC-SHA256(api_key, BOM + METHOD + URL + CLIENT + TIMESTAMP + BODY))` |
+
+Payout commands require the caller IP address to be present in the merchant's payout IP whitelist.
+
+## Supported
+
+**Legacy v1 (`POST .../api.php`, dispatched by `cmd`):**
+
+- Payments: `create_transaction`, `get_tx_info`, `get_tx_info_multi`, `get_callback_address`
+- Account: `rates`, `balances`, `get_basic_info`
+- Payouts: `create_withdrawal`, `create_mass_withdrawal`
+
+**v2 REST:**
+
+- Invoices: create (`POST /api/v2/merchant/invoices`), get, list, cancel
+- Buyer checkout: `GET /api/v1/invoices/{id}/payment-currencies/{currency}` (and `/status`) — anonymous
+- Catalogue: `GET /api/v1|v2/currencies`, `GET /api/v1/rates` — anonymous
+
+## Currency codes
+
+- Legacy v1 uses dotted codes: `BTC`, `LTC`, `USDT.TRC20`, `USDC.BEP20`, `BNB.BSC`.
+- v2 uses numeric ids: fiat `USD = 5057`, `EUR = 5195`; crypto `BTC = 1`, `ETH = 4`, `TRX = 9`; tokens `id:contract` (e.g. `9:TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t` = USDT.TRC20).
+
+## Not Supported
+
+These return a CoinPayments-shaped error (`{"error": "..."}` for v1):
+
+- Conversions: `convert_coins`, `get_conversion_limits`
+- Internal transfers / PayByName: `create_transfer`, `get_pbn_info`
+- Personal wallet addresses: `get_deposit_address`
+- **v2 payouts** (the wallet-centric `wallets/{id}/spend/*` flow). Use the legacy v1 `create_withdrawal` / `create_mass_withdrawal` for payouts.
+
+## Idempotency
+
+- `create_mass_withdrawal`: each `wd[<key>]` map key is treated as the idempotency key — re-sending the same key returns the existing payout, and reusing a key with different data is rejected.
+- `create_withdrawal`: the legacy single withdrawal has no client idempotency key, so Paw derives one from the request body. Identical retries (same address, amount, currency, callback, note) collapse onto one payout — which protects against double-submit and timeout retries — but two genuinely distinct withdrawals with identical fields would also collapse. Prefer `create_mass_withdrawal` with explicit keys when you need to send identical amounts.
+
+## Webhooks / IPN
+
+Invoices created through `/compat/coinpayments/v1/...` send a **legacy IPN**: a form-encoded body with numeric `status` codes (`0` waiting, `1` pending, `100` complete, `-1` cancelled/timed-out) and an `HMAC` header (`HMAC-SHA512` over the raw body, keyed by `api_key`).
+
+Invoices created through `/compat/coinpayments/api/v2/...` send a **v2 webhook**: a JSON body `{ "id", "type", "timestamp", "invoice" }` with the `X-CoinPayments-Client`, `X-CoinPayments-Timestamp`, and `X-CoinPayments-Signature` headers. The signature uses the same HMAC-SHA256 scheme as API requests, computed over the delivery URL — so the CoinPayments SDK's `verifyWebhook(method, url, ...)` accepts it unchanged.

@@ -1,0 +1,90 @@
+---
+title: WooCommerce
+description: Accept crypto payments in WooCommerce via the official PawPayments gateway plugin.
+---
+
+The WooCommerce plugin adds a single payment gateway — *PawPayments (Crypto)* — to the WooCommerce checkout. It is checkout‑only: WooCommerce has no native credit balance, so there is no top‑up flow.
+
+<CardGroup cols={2}>
+  <Card title="Download the plugin (.zip)" icon="download" href="https://github.com/pawpayments/woocommerce-plugin/releases/latest" cta="Latest release">
+    Ready-to-upload `pawpayments-for-woocommerce-<version>.zip`.
+  </Card>
+  <Card title="View source on GitHub" icon="github" href="https://github.com/pawpayments/woocommerce-plugin" cta="pawpayments/woocommerce-plugin">
+    Source, releases, and issue tracker.
+  </Card>
+</CardGroup>
+
+| Property | Value |
+|---|---|
+| GitHub | [`pawpayments/woocommerce-plugin`](https://github.com/pawpayments/woocommerce-plugin) |
+| Download | [Latest release `.zip`](https://github.com/pawpayments/woocommerce-plugin/releases/latest) |
+| WordPress | 6.0+ |
+| WooCommerce | 7.0+ |
+| PHP | 7.4+ (8.0+ recommended) |
+| Required extensions | `ext-curl`, `ext-json` |
+| HPOS | Compatible (High‑Performance Order Storage) |
+
+## Install
+
+1. Download the latest `pawpayments-for-woocommerce-<version>.zip` from the [GitHub Releases page](https://github.com/pawpayments/woocommerce-plugin/releases/latest) (or build it yourself with `zip -r ... woocommerce-plugin`).
+2. **Plugins → Add New → Upload Plugin**, choose the zip, click **Install Now**, then **Activate**.
+3. **WooCommerce → Settings → Payments**, find **PawPayments (Crypto)**, click **Manage**.
+
+## Configure
+
+| Field | Value |
+|---|---|
+| Enable / Disable | Tick to expose the gateway at checkout. |
+| Title | Customer‑facing label (e.g. *Pay with Crypto*). |
+| Description | Optional helper text under the title. |
+| API Key | Merchant API key from the Paw dashboard. |
+| API Base URL | `https://api.pawpayments.com` (default). |
+| Debug Log | Writes to **WooCommerce → Status → Logs → pawpayments**. |
+
+## Webhook
+
+WooCommerce auto‑registers the handler at `https://<your-store>/?wc-api=pawpayments`. The plugin sends this URL as `notify_url` on every invoice it creates, so you do **not** need to set a callback URL on the merchant side.
+
+```
+https://<your-store>/?wc-api=pawpayments       (always works)
+https://<your-store>/wc-api/pawpayments        (with pretty permalinks)
+```
+
+## Order lifecycle
+
+1. Customer chooses *Pay with Crypto* and is redirected to a `https://paw.now/invoice#…` paywall.
+2. The order is created in **On hold** with the invoice id stored in `_pawpayments_order_id`.
+3. After the on‑chain payment confirms, Paw posts a webhook with `status=success`. The plugin verifies the `X-Paw-Signature` header and calls `payment_complete()` — the order becomes **Processing** (or **Completed** for virtual goods) with a `PawPayments: Paid X USDT (order …)` note.
+
+`payment_complete()` is natively idempotent, so duplicate webhook deliveries never double‑credit an order. Webhooks carrying a `permanent_address_id` are silently acknowledged with `200 OK`.
+
+## Smoke test
+
+```bash
+ORDER_ID="<paw_order_id_from_meta>"
+EXTRA="<wc_order_id>"
+KEY="<your_api_key>"
+BODY="{\"order_id\":\"$ORDER_ID\",\"extra\":\"$EXTRA\",\"status\":\"success\",\"amount\":\"10\",\"asset\":\"USDT\"}"
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$KEY" | awk '{print $2}')
+
+curl -X POST "https://<your-store>/?wc-api=pawpayments" \
+  -H "Content-Type: application/json" \
+  -H "X-Paw-Signature: $SIG" \
+  -d "$BODY"
+```
+
+A healthy response is `OK` with HTTP 200, and the order transitions to *Processing*.
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| Gateway not visible at checkout | Disabled in settings, or cart currency not enabled on the merchant account. |
+| `Payment error: Invalid API key` | Wrong key, or the merchant account is not yet activated. |
+| Order stays *On hold* after payment | Webhook not delivered — confirm the store is reachable over HTTPS and not behind a firewall blocking outbound Paw deliveries. |
+| Webhook returns HTTP 401 | Signature mismatch — the gateway's API key differs from the one used when the invoice was issued. |
+| No log entries | Enable **Debug Log** and check **WooCommerce → Status → Logs**. |
+
+## Uninstall
+
+Deactivate and delete the plugin via **Plugins → Installed Plugins**. Settings live in `wp_options.woocommerce_pawpayments_settings`; remove with `wp option delete woocommerce_pawpayments_settings` if needed. The plugin does not create any custom database tables.
