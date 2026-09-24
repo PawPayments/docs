@@ -1,0 +1,107 @@
+---
+title: Node.js SDK
+description: Official TypeScript-first Node.js client for the PawPayments Native V2 API — built-in fetch, ESM and CJS, webhook helpers.
+---
+
+The `@pawpayments/sdk` package is the official Node.js SDK for the Native V2 API. It covers the same REST resources as the Python SDK, uses only built-in `fetch` at runtime (no HTTP dependencies), ships ES modules and CommonJS builds plus `.d.ts`, and exposes webhook verification helpers aligned with other official integrations.
+
+<CardGroup cols={2}>
+  <Card title="Install from npm" icon="npm" href="https://www.npmjs.com/package/@pawpayments/sdk" cta="npm install @pawpayments/sdk">
+    The published npm package.
+  </Card>
+  <Card title="View source on GitHub" icon="github" href="https://github.com/pawpayments/node-sdk" cta="pawpayments/node-sdk">
+    Source, releases, and issue tracker.
+  </Card>
+</CardGroup>
+
+| Property | Value |
+|---|---|
+| Package name | `@pawpayments/sdk` |
+| npm | [`@pawpayments/sdk`](https://www.npmjs.com/package/@pawpayments/sdk) |
+| GitHub | [`pawpayments/node-sdk`](https://github.com/pawpayments/node-sdk) |
+| Minimum Node.js | 18 |
+| Runtime dependencies | None (`fetch` required) |
+
+## Installation
+
+```bash
+npm install @pawpayments/sdk
+```
+
+```bash
+pnpm add @pawpayments/sdk
+```
+
+```bash
+yarn add @pawpayments/sdk
+```
+
+## Quick start
+
+```ts
+import { PawPayments } from "@pawpayments/sdk";
+
+const paw = new PawPayments({ apiKey: process.env.PAW_API_KEY! });
+
+const invoice = await paw.invoices.create({
+  amount: 25,
+  fiat_currency: "USD",
+  billing_type: "STATIC",
+  asset: "usdt_tron",
+  description: "Pro plan, 1 month",
+  notify_url: "https://example.com/paw/webhook",
+});
+
+console.log(invoice.payment_url);
+```
+
+`PawPaymentsOptions` also accepts `baseUrl` (default `https://api.pawpayments.com`), `timeoutMs`, and a custom `fetch` implementation for constrained runtimes.
+
+## Resources
+
+Successful calls return unwrapped `result` payloads (or list envelopes where the API paginates). Failures throw `PawPaymentsApiError` with `code`, `httpStatus`, `message`, and optional `details`.
+
+| Attribute | Methods |
+|---|---|
+| `paw.assets` | `list()` |
+| `paw.rates` | `get({ base, assets })` |
+| `paw.balance` | `get()` |
+| `paw.invoices` | `create()`, `get(id)`, `list()`, `notify(id)` |
+| `paw.payouts` | `create(params, { uniqId })`, `get(id)`, `list()`, `batch(items, { uniqId })` |
+| `paw.ledger` | `list({ ... })` |
+| `paw.notifications` | `list()`, `test(url?)` |
+| `paw.permanent` | `create()`, `get(id)`, `list()`, `deactivate(id)` |
+
+`payouts.create` and `payouts.batch` accept optional `uniqId` for idempotency (UUIDv4). If omitted, the SDK uses `crypto.randomUUID()`; duplicates within two hours yield HTTP `409`.
+
+## Webhook verification
+
+Validate against the **raw body** buffer or `Uint8Array` your framework exposes — parsing JSON first and re-stringifying will change bytes and fail HMAC checks.
+
+```ts
+import { Webhook } from "@pawpayments/sdk";
+
+const sigHeader = req.header("X-Paw-Signature") ?? "";
+if (!Webhook.verifyRawBody(req.body, sigHeader, process.env.PAW_API_KEY!)) {
+  return res.status(401).end();
+}
+
+const payload = Webhook.parsePayload(req.body);
+```
+
+Permanent-address callbacks that include `permanent_address_id` should return `200 OK` without duplicating checkout-specific side effects, consistent with the PHP plugins.
+
+## Errors
+
+```ts
+import { PawPaymentsApiError } from "@pawpayments/sdk";
+
+try {
+  await paw.invoices.create({});
+} catch (err) {
+  if (err instanceof PawPaymentsApiError) {
+    console.error(err.code, err.httpStatus, err.message, err.details);
+  }
+}
+```
+
