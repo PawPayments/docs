@@ -1,0 +1,118 @@
+---
+title: Python SDK
+description: Official Python client for the PawPayments Native V2 API — sync and async clients plus webhook verification.
+---
+
+The `pawpayments` package is the official Python SDK for the Native V2 API. It exposes resource helpers that mirror the public REST surface (`/api/v2/*`), ships both a synchronous client (`PawPayments`, `requests`) and an asynchronous one (`AsyncPawPayments`, `httpx`), and includes helpers for verifying webhook signatures.
+
+<CardGroup cols={2}>
+  <Card title="Install from PyPI" icon="python" href="https://pypi.org/project/pawpayments/" cta="pip install pawpayments">
+    The published PyPI package.
+  </Card>
+  <Card title="View source on GitHub" icon="github" href="https://github.com/pawpayments/python-sdk" cta="pawpayments/python-sdk">
+    Source, releases, and issue tracker.
+  </Card>
+</CardGroup>
+
+| Property | Value |
+|---|---|
+| Package name | `pawpayments` |
+| PyPI | [`pawpayments`](https://pypi.org/project/pawpayments/) |
+| GitHub | [`pawpayments/python-sdk`](https://github.com/pawpayments/python-sdk) |
+| Minimum Python | 3.9 |
+| Runtime dependencies | `requests`, `httpx` |
+
+## Installation
+
+```bash
+pip install pawpayments
+```
+
+## Quick start (sync)
+
+```python
+from pawpayments import PawPayments
+
+paw = PawPayments(api_key="…")
+
+invoice = paw.invoices.create(
+    amount=25,
+    fiat_currency="USD",
+    billing_type="STATIC",
+    asset="usdt_tron",
+    description="Pro plan, 1 month",
+    notify_url="https://example.com/paw/webhook",
+)
+
+print(invoice["payment_url"])
+```
+
+Optional constructor arguments match other official clients: `base_url` defaults to `https://api.pawpayments.com`, `timeout` defaults to `30` seconds, and you may inject a shared `requests.Session`.
+
+## Quick start (async)
+
+```python
+import asyncio
+from pawpayments import AsyncPawPayments
+
+
+async def main():
+    async with AsyncPawPayments(api_key="…") as paw:
+        invoice = await paw.invoices.create(
+            amount=25,
+            fiat_currency="USD",
+            billing_type="STATIC",
+            asset="usdt_tron",
+        )
+        print(invoice["payment_url"])
+
+
+asyncio.run(main())
+```
+
+## Resources
+
+Successful responses unwrap the standard `{ ok, result }` envelope into plain dicts (or typed list wrappers where applicable). API and transport failures raise `PawPaymentsApiError` with `code`, `http_status`, and optional `details`.
+
+| Attribute | Methods |
+|---|---|
+| `paw.assets` | `list()` |
+| `paw.rates` | `get(base=..., assets=...)` |
+| `paw.balance` | `get()` |
+| `paw.invoices` | `create(**...)`, `get(order_id)`, `list(**...)`, `notify(order_id)` |
+| `paw.payouts` | `create(..., uniq_id=...)`, `get(id)`, `list(**...)`, `batch(items, uniq_id=...)` |
+| `paw.ledger` | `list(**...)` |
+| `paw.notifications` | `list(**...)`, `test(url=...)` |
+| `paw.permanent` | `create(**...)`, `get(id)`, `list(**...)`, `deactivate(id)` |
+
+For `payouts.create` and `payouts.batch`, pass `uniq_id` (UUIDv4) for explicit idempotency. If omitted, the SDK generates one; repeating the same id within two hours returns HTTP `409`.
+
+## Webhook verification
+
+Use the **raw request body** bytes when validating `X-Paw-Signature` (HMAC-SHA256 with your API key). Re-encoding JSON before hashing breaks verification.
+
+```python
+from flask import abort
+from pawpayments import Webhook
+
+raw = request.get_data()
+sig = request.headers.get("X-Paw-Signature", "")
+if not Webhook.verify_raw_body(raw, sig, api_key):
+    abort(401)
+
+payload = Webhook.parse_payload(raw)
+```
+
+Treat webhooks that include `permanent_address_id` like the official plugins: acknowledge with `200 OK` without treating them as checkout callbacks unless your integration owns permanent-address flows.
+
+## Errors
+
+```python
+from pawpayments import PawPaymentsApiError
+
+try:
+    paw.invoices.create(...)
+except PawPaymentsApiError as exc:
+    print(exc.code, exc.http_status, str(exc), exc.details)
+```
+

@@ -1,0 +1,41 @@
+---
+title: Overview
+description: Public REST API for the PawPayments crypto payment gateway.
+---
+
+The PawPayments API lets merchants accept cryptocurrency payments across 
+BTC, ETH, BSC, Polygon, Base, TRON, TON, Solana, XRP, LTC, BCH
+and Monero — both native coins and supported tokens (USDT, USDC, DAI and more).
+
+Invoices and payouts can be priced in any of 23 supported fiat currencies:
+USD, EUR, GBP, CAD, AUD, CHF, JPY, NZD, SGD, HKD, NGN, KRW, ILS, RON, ARS,
+INR, IDR, MXN, MYR, TRY, PLN, BRL, THB. USD is the internal accounting base —
+merchant balances and payout `fiat_amount_usd` are always denominated in USD,
+regardless of the invoice/payout `fiat_currency`.
+
+The API is organised around a few resources:
+
+- **Invoices** — one-shot payment requests with a hosted checkout page. Each
+  invoice has a `billing_type` (`STATIC` for fixed-price service purchases,
+  `VARY` for open-ended balance top-ups). Invoices can also be bound to a
+  permanent address by passing `permanent_address: true` (requires
+  `billing_type=VARY` and `user_id`). See the [Billing types](./billing-type)
+  page for the full semantics.
+- **Permanent addresses** — long-lived per-user deposit addresses.
+- **Payouts** — outgoing transfers, single or in batches.
+- **Ledger / Notifications** — read-side endpoints for reconciliation and
+  webhook delivery introspection.
+
+All endpoints live under `/api/v2/`. Responses follow a consistent envelope:
+
+```json
+{ "ok": true, "result": { ... } }
+```
+
+or, on failure:
+
+```json
+{ "ok": false, "error": { "code": "INVALID_ID", "message": "..." } }
+```
+
+List endpoints add a `pagination` object next to `result`.
