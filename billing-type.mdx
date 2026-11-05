@@ -1,0 +1,78 @@
+---
+title: Billing types
+description: How `billing_type` controls invoice settlement (STATIC vs VARY).
+---
+
+Every invoice has a `billing_type` that decides what happens when the customer
+sends an amount different from the requested one and when the invoice is
+considered finalised.
+
+## `STATIC` — service / product purchase
+
+Use this for fixed-price flows: subscription renewal, one-off product
+purchase, paid plan upgrade, etc.
+
+- The invoice expects exactly `amount`.
+- An **underpayment** moves the invoice to `partially_paid` **without**
+  finalising it. The deposit address keeps listening, the customer can top
+  up to the full amount, and only then does the invoice transition to
+  `success`. If they never finish paying, the invoice expires (`expires_at`)
+  and is moved to `cancelled`. The partial credit on the merchant balance
+  is **kept** — `cancelled` reports the final under-paid state, it does
+  not reverse the credit. `cancelled` is reachable **only** from this
+  path: a `partially_paid` `STATIC` invoice that crossed `expires_at`
+  without a top-up. A merchant webhook fires on this transition so the
+  partial credit can be reconciled.
+- An **overpayment** transitions the invoice to `paid_over` (final).
+- An **exact payment** transitions the invoice to `success` (final).
+- The hosted checkout exposes the remaining amount via `initial_amount` /
+  `initial_fiat_amount` so the page can render a "pay the rest" UI on a
+  partial payment.
+
+Final statuses: `success`, `paid_over`, `failed`, `high_risk`, `cancelled`,
+`expired`. On TTL: `partially_paid` (merchant already credited the partial
+amount at AML time) → `cancelled`. Everything else still in `created` at
+TTL — including a sub-$2 tiny-payment that AML never credited — → `expired`.
+
+## `VARY` — balance top-up / open-ended deposit
+
+Use this when you don't know the exact amount in advance, e.g. a wallet
+top-up, a tip jar, or a [permanent address](#permanent-addresses).
+
+- Any incoming payment finalises the invoice in one shot:
+  - covers `amount` → `success`
+  - less than `amount` → `partially_paid` (treated as **finalized** — no
+    further top-ups are accepted on the same invoice)
+  - more than `amount` → `paid_over`
+- This makes `VARY` invoices a single-payment record of the deposit
+  rather than an open-ended ledger.
+
+Final statuses: `success`, `partially_paid`, `paid_over`, `failed`,
+`high_risk`, `expired`. `VARY` does not produce `cancelled`: any deposit
+finalises the invoice in one shot, so on TTL only the no-deposit case
+remains (`created` → `expired`).
+
+## Permanent addresses
+
+Setting `permanent_address: true` when creating an invoice binds it to the
+long-lived deposit address for `(merchant, user_id, asset family)`. The
+address is created on first use and reused for every subsequent invoice.
+
+Required when `permanent_address: true`:
+
+- `billing_type` **must be `VARY`**.
+- `user_id` must be supplied.
+- `asset` must belong to a family that supports permanent addresses
+  (`evm`, `tron`, `solana`, `xrp`, `bitcoin`, `litecoin`, `bitcoincash`).
+  TON and XMR are not supported for permanent addresses.
+
+When a deposit lands on a permanent address:
+
+1. If there is a non-finalised invoice already attached to the address
+   (e.g. a `created` invoice the merchant just created with
+   `permanent_address: true`), the deposit is credited to **that invoice**.
+2. Otherwise a new invoice is auto-created (`billing_type: VARY`) and
+   credited.
+
+Either way the address keeps listening — finalised invoices on a permanent
+address never trigger an unsubscribe.

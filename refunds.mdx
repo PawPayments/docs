@@ -1,0 +1,93 @@
+---
+title: Flagged payments and refunds
+description: What happens when the AML check flags a payment, and how the funds go back to the payer.
+---
+
+Every incoming payment is screened by our AML check. When the check flags a
+payment, the invoice ends in `high_risk`: the payment is **not** credited to
+your balance, and the funds stay on the invoice's deposit address until they
+are returned to the payer. You receive a `high_risk` webhook like for any
+other final status.
+
+## Direct refund
+
+A flagged payment can be refunded with **no identity verification** of the
+payer — to the address it was sent from by default, or to another address on
+the same network. Either side can start it:
+
+- **The payer**, on the invoice's payment page. It is the `payment_url` from
+  the create response, or `https://pawpayments.com/checkout/{external_id}`
+  with the `external_id` from the webhook. The refund to the sending address
+  works even if the payer never opened the page before, for example when they
+  paid to an address you displayed on your own site. Choosing another address
+  on the page is possible only from the browser the payer opened it in before
+  paying; otherwise refund to another address through the API or the
+  dashboard.
+- **You**, through the API (below) or with **Refund** on the invoice in your
+  dashboard (another address there asks for your two-factor code, like a
+  withdrawal).
+
+The network fee for the refund is deducted from the refunded amount. The
+direct refund is available for 30 days after the payment was flagged. The
+invoice then moves to `refunding` and, once the transaction is on chain, to
+`refunded`; both changes are delivered as webhooks.
+
+<Warning>
+If the payer sent the funds directly from an exchange account, a refund to the
+sending address may not reach them: exchanges often send from shared
+addresses. Refund such payments to the payer's own wallet address instead.
+</Warning>
+
+Some addresses cannot receive a direct refund — for example an address you
+have withdrawn your balance to. The refund then answers
+`REFUND_ADDRESS_NOT_ALLOWED`; use another address or the sending address.
+
+### Refund through the API
+
+`POST /api/v2/invoices/{invoice_id}/refund` with an optional JSON body. Send
+no body (or `{}`) to refund to the sending address, or name the destination:
+
+```bash
+curl -X POST https://api.pawpayments.com/api/v2/invoices/65f1c3a4e8b1c2d3a4b5c6e0/refund \
+  -H "x-api-key: $PAW_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"refund_address": "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf"}'
+```
+
+```json
+{
+  "ok": true,
+  "result": {
+    "status": "refunding",
+    "refund_address": "TXYZopYRdj2D9XRtbG411XZZ3kM5VkAeBf"
+  }
+}
+```
+
+`refund_address` in the answer is where the funds are sent. A refund to
+another address than the sender follows the same rule as payouts: the request
+must come from an IP in your account's allowed subnets, otherwise it answers
+`PAYOUTS_DISABLED`. A refund to the sending address works from anywhere. The
+endpoint is not available with sandbox keys (`SANDBOX_UNSUPPORTED`).
+
+| Error code | HTTP | Meaning |
+|---|---|---|
+| `REFUND_UNAVAILABLE` | 403 | This payment can only be refunded through our compliance team. |
+| `REFUND_EXPIRED` | 403 | More than 30 days have passed since the payment was flagged. |
+| `REFUND_ADDRESS_NOT_ALLOWED` | 403 | This address cannot receive the refund; use another one or the sending address. |
+| `INVALID_ADDRESS` | 400 | `refund_address` is not a valid address on the payment's network. |
+| `PAYOUTS_DISABLED` | 403 | `refund_address` is not the sender and the request does not come from an allowed subnet. |
+| `REFUND_RETRY_LATER` | 503 | The refund could not be started right now; nothing was sent, try again in a few minutes. |
+| `INVALID_STATUS` | 409 | The invoice is not `high_risk`. |
+| `REFUND_IN_PROGRESS` | 409 | A refund of this payment has already been started. |
+| `ALREADY_REFUNDED` | 409 | The payment has already been refunded. |
+| `NOT_FOUND` | 404 | No invoice with this id belongs to your account. |
+
+## When compliance handles the refund
+
+Some flagged payments cannot be refunded directly, for example an unusually
+large amount or a network on which the refund cannot be sent without our
+team. For a specific payment we do not disclose why. The API answers
+`REFUND_UNAVAILABLE`, and the payment page asks the payer to email
+[aml@pawpayments.com](mailto:aml@pawpayments.com) with their order ID; our
+compliance team takes it from there.

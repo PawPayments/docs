@@ -1,0 +1,132 @@
+---
+title: Sandbox
+description: Build and test your integration before your domain is verified.
+---
+
+The sandbox is a full rehearsal of the payment flow that never touches the
+blockchain. You create invoices, drive them through their lifecycle by hand and
+receive the same signed webhooks your production integration will receive — all
+before your domain is verified and while your account is still pending.
+
+Sandbox data is completely separate from live data. Sandbox invoices never
+credit a balance, never appear in your statistics, never earn a fee and are
+never seen by any payout. They are also disposable: sandbox invoices and webhook
+logs are deleted automatically after 90 days.
+
+## Getting a sandbox key
+
+Generate one in the dashboard on the **Sandbox** tab of your merchant. It looks
+like this:
+
+```
+sk_sandbox_9f2c1d0b5e7a4c6f8b3d2e1a0c9f8e7d
+```
+
+The prefix is what matters: any key starting with `sk_sandbox_` is routed to the
+sandbox. Everything else stays the same — same host, same paths, same request
+and response shapes:
+
+```bash
+curl https://api.pawpayments.com/api/v2/invoices \
+  -H "x-api-key: sk_sandbox_..." \
+  -H "Content-Type: application/json" \
+  -d '{"amount": "25.00", "fiat_currency": "USD", "asset": "usdt_tron"}'
+```
+
+Switching an integration between environments is therefore a one-line change:
+swap the key.
+
+<Warning>
+  Never use a sandbox key in production, and never use a live key against test
+  code. A sandbox invoice is not payable — its `address_to` is deliberately not
+  a valid address on any chain and starts with `SANDBOX`.
+</Warning>
+
+## What works in the sandbox
+
+| Endpoint | Sandbox |
+| --- | --- |
+| `POST /api/v2/invoices` | Yes |
+| `GET /api/v2/invoices` | Yes |
+| `GET /api/v2/invoices/{id}` | Yes |
+| `POST /api/v2/invoices/{id}/simulate` | Sandbox only |
+| `POST /api/v2/invoices/{id}/notify` | Yes — delivered immediately, not queued |
+| `GET /api/v2/notifications` | Yes |
+| `POST /api/v2/notifications/test` | Yes |
+| `GET /api/v2/assets`, `GET /api/v2/rates` | Yes |
+| `POST /api/v2/payouts`, `/payouts/batch` | No — `400 SANDBOX_UNSUPPORTED` |
+| `GET /api/v2/balance`, `GET /api/v2/ledger` | No — `400 SANDBOX_UNSUPPORTED` |
+| `POST /api/v2/permanent` | No — `400 SANDBOX_UNSUPPORTED` |
+| Hosted checkout page | No — live only |
+
+Anything that moves or reports real money is refused outright rather than
+answered with misleading empty data.
+
+## Simulating a payment
+
+A live invoice's status is decided by the chain. In the sandbox you decide it:
+
+```bash
+curl https://api.pawpayments.com/api/v2/invoices/65f1c3a4e8b1c2d3a4b5c6e0/simulate \
+  -H "x-api-key: sk_sandbox_..." \
+  -H "Content-Type: application/json" \
+  -d '{"status": "success"}'
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "invoice": { "order_id": "65f1c3a4e8b1c2d3a4b5c6e0", "status": "success", "...": "..." },
+    "webhook": { "url": "https://shop.example.com/webhook/paw", "status_code": 200, "delivered": true, "error": null }
+  }
+}
+```
+
+### Parameters
+
+<ParamField body="status" type="string" required>
+  One of `success`, `partially_paid`, `paid_over`, `expired`, `cancelled`,
+  `failed`, `refunded`.
+</ParamField>
+
+<ParamField body="paid_amount" type="number">
+  Amount paid, in the invoice's `fiat_currency`. Defaults to the full amount for
+  `success`, half for `partially_paid` and 125% for `paid_over`.
+</ParamField>
+
+<ParamField body="send_webhook" type="boolean" default="true">
+  Whether to deliver the webhook for this transition.
+</ParamField>
+
+<ParamField body="notify_url" type="string">
+  Override the webhook destination for this call only — handy for pointing at a
+  local tunnel while you develop.
+</ParamField>
+
+The response includes the delivery result, so a failing endpoint shows up
+immediately instead of disappearing into a retry queue.
+
+## Sandbox webhooks
+
+Sandbox webhooks are byte-for-byte the same as live ones, with two additions
+that let you assert you are not in production:
+
+- the payload carries `"sandbox": true`
+- the request carries an `X-Paw-Sandbox: true` header
+
+The `X-Paw-Signature` header is computed with your **sandbox** key, so a
+receiver that verifies against the live key will correctly reject a sandbox
+webhook. Verify exactly as you do in production, using whichever key the
+environment is configured with — see [Webhooks](/webhooks).
+
+Deliveries are logged and readable through `GET /api/v2/notifications` with your
+sandbox key, and on the Sandbox tab in the dashboard.
+
+## Going live
+
+1. Verify your domain and finish onboarding.
+2. Generate a live API key in the dashboard.
+3. Swap `sk_sandbox_…` for the live key in your configuration.
+
+No other change is required.
